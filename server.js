@@ -1,71 +1,83 @@
 const express = require("express");
-const { chromium } = require("playwright");
-const fetch = (...args) => import("node-fetch").then(({default: fetch}) => fetch(...args));
-
+const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 let cachedMatches = [];
 let lastUpdated = null;
-let jsonEndpoint = null;
-
-async function discoverJsonEndpoint() {
-  console.log("🌍 Discovering Profixio JSON endpoint...");
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const page = await browser.newPage();
-
-  page.on("response", async (resp) => {
-    try {
-      const url = resp.url();
-      if (url.includes("profixio") && url.includes("json")) {
-        console.log("📡 Found JSON endpoint:", url);
-        jsonEndpoint = url;
-      }
-    } catch {}
-  });
-
-  await page.goto(
-    "https://www.profixio.com/app/tournaments?klubbid=26031",
-    { waitUntil: "networkidle", timeout: 60000 }
-  );
-
-  await new Promise((r) => setTimeout(r, 10000)); // give time for XHR
-  await browser.close();
-}
 
 async function scrapeMatches() {
-  while (true) {
-    try {
-      if (!jsonEndpoint) {
-        await discoverJsonEndpoint();
-      }
+  try {
+    console.log("📡 Fetching matches from Livewire...");
 
-      if (jsonEndpoint) {
-        console.log("📥 Fetching matches from JSON API...");
-        const resp = await fetch(jsonEndpoint);
-        const data = await resp.json();
+    // STEP 1: Get cookies from initial GET
+    const res = await fetch("https://www.profixio.com/app/tournaments?klubbid=26031", {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    const cookies = res.headers.get("set-cookie") || "";
+    const xsrf = cookies.match(/XSRF-TOKEN=([^;]+)/)?.[1];
+    const session = cookies.match(/profixio_session=([^;]+)/)?.[1];
 
-        // Adapt this depending on JSON structure
-        cachedMatches = data.map((m) => ({
-          date: m.date || "",
-          time: m.time || "",
-          teams: `${m.home} - ${m.away}`,
-          result: m.result || "",
-        }));
-
-        lastUpdated = new Date().toISOString();
-        console.log(`✅ Updated: ${cachedMatches.length} matches`);
-      }
-    } catch (err) {
-      console.error("❌ Scrape failed:", err.message);
+    if (!xsrf || !session) {
+      throw new Error("Missing cookies");
     }
 
-    await new Promise((r) => setTimeout(r, 10000)); // wait 10s, then repeat
+    // STEP 2: Build payload (taken from DevTools → Network → livewire/update)
+    const payload = {
+      updates: [
+        {
+          type: "callMethod",
+          payload: {
+            method: "filterMatches",
+            params: { klubbid: 26031, season: 765 }
+          }
+        }
+      ]
+    };
+
+    // STEP 3: POST to Livewire endpoint
+    const livewireRes = await fetch("https://www.profixio.com/app/livewire/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Livewire": "true",
+        "X-CSRF-TOKEN": decodeURIComponent(xsrf),
+        "Cookie": `XSRF-TOKEN=${xsrf}; profixio_session=${session}`,
+        "User-Agent": "Mozilla/5.0"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await livewireRes.json();
+
+    // STEP 4: Parse response → matches
+    // Adjust this according to actual Livewire JSON
+    cachedMatches = (data?.effects?.html || "")
+      .split("</tr>")
+      .map(row => {
+        const cells = row.split("</td>").map(c => c.replace(/<[^>]+>/g, "").trim());
+        if (cells.length >= 4) {
+          return {
+            date: cells[0],
+            time: cells[1],
+            teams: cells[2],
+            result: cells[3]
+          };
+        }
+      })
+      .filter(Boolean);
+
+    lastUpdated = new Date().toISOString();
+    console.log(`✅ Updated: ${cachedMatches.length} matches`);
+
+  } catch (err) {
+    console.error("❌ Scrape failed:", err.message);
   }
+
+  // repeat directly after finishing
+  setTimeout(scrapeMatches, 5000);
 }
 
+// start loop
 scrapeMatches();
 
 app.get("/matches", (req, res) => {
@@ -74,10 +86,6 @@ app.get("/matches", (req, res) => {
     count: cachedMatches.length,
     matches: cachedMatches,
   });
-});
-
-app.get("/endpoint", (req, res) => {
-  res.json({ jsonEndpoint });
 });
 
 app.listen(process.env.PORT || 3000, () => {
