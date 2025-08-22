@@ -7,66 +7,68 @@ let lastUpdated = null;
 let lastHTML = "";
 
 async function scrapeMatches() {
-  try {
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-    const context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      locale: "sv-SE",
-    });
-
-    const page = await context.newPage();
-
-    console.log("🌍 Navigating to Profixio...");
-    await page.goto(
-      "https://www.profixio.com/app/tournaments?klubbid=26031",
-      { waitUntil: "networkidle", timeout: 60000 }
-    );
-
-    // Spoof navigator.webdriver to look human
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", {
-        get: () => false,
+  while (true) {
+    try {
+      console.log("🌍 Starting scrape...");
+      const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
       });
-    });
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        locale: "sv-SE",
+      });
 
-    await page.waitForSelector("table td", { timeout: 60000 });
+      const page = await context.newPage();
+      await page.goto(
+        "https://www.profixio.com/app/tournaments?klubbid=26031",
+        { waitUntil: "networkidle", timeout: 60000 }
+      );
 
-    lastHTML = await page.content();
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", {
+          get: () => false,
+        });
+      });
 
-    const matches = await page.$$eval("table tr", rows =>
-      rows
-        .map(row => {
-          const cols = Array.from(row.querySelectorAll("td"));
-          if (cols.length >= 4) {
-            return {
-              date: cols[0]?.innerText.trim(),
-              time: cols[1]?.innerText.trim(),
-              teams: cols[2]?.innerText.trim(),
-              result: cols[3]?.innerText.trim() || null,
-            };
-          }
-          return null;
-        })
-        .filter(Boolean)
-    );
+      await page.waitForSelector("table td", { timeout: 60000 });
 
-    cachedMatches = matches;
-    lastUpdated = new Date().toISOString();
+      lastHTML = await page.content();
 
-    console.log(`✅ Scrape updated: ${matches.length} matches`);
-    await browser.close();
-  } catch (err) {
-    console.error("❌ Scrape failed:", err.message);
+      const matches = await page.$$eval("table tr", rows =>
+        rows
+          .map(row => {
+            const cols = Array.from(row.querySelectorAll("td"));
+            if (cols.length >= 4) {
+              return {
+                date: cols[0]?.innerText.trim(),
+                time: cols[1]?.innerText.trim(),
+                teams: cols[2]?.innerText.trim(),
+                result: cols[3]?.innerText.trim() || null,
+              };
+            }
+            return null;
+          })
+          .filter(Boolean)
+      );
+
+      cachedMatches = matches;
+      lastUpdated = new Date().toISOString();
+      console.log(`✅ Updated: ${matches.length} matches`);
+
+      await browser.close();
+    } catch (err) {
+      console.error("❌ Scrape failed:", err.message);
+    }
+
+    // wait a bit before retrying (e.g., 5s)
+    await new Promise(r => setTimeout(r, 5000));
   }
 }
 
-// run every 10s
-setInterval(scrapeMatches, 10 * 1000);
+// start loop
 scrapeMatches();
 
 app.get("/matches", (req, res) => {
