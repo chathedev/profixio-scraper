@@ -6,19 +6,28 @@ let cachedMatches = [];
 
 async function scrapeMatches() {
   try {
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox"
+      ]
+    });
     const page = await browser.newPage();
 
     await page.goto("https://www.profixio.com/app/tournaments?klubbid=26031", {
-      waitUntil: "networkidle"
+      waitUntil: "domcontentloaded",
+      timeout: 60000
     });
 
-    await page.waitForSelector("table");
+    // Wait for at least one match row (inspect Profixio HTML: they use <tr> inside tbody)
+    await page.waitForSelector("table tbody tr", { timeout: 20000 });
 
-    const matches = await page.$$eval("tr", rows =>
+    // Scrape rows
+    const matches = await page.$$eval("table tbody tr", rows =>
       rows.map(row => {
         const cols = Array.from(row.querySelectorAll("td"));
-        if (cols.length > 3) {
+        if (cols.length >= 4) {
           return {
             date: cols[0].innerText.trim(),
             time: cols[1].innerText.trim(),
@@ -26,24 +35,31 @@ async function scrapeMatches() {
             result: cols[3].innerText.trim()
           };
         }
+        return null;
       }).filter(Boolean)
     );
 
     cachedMatches = matches;
-    console.log("Updated:", matches.length, "matches");
+    console.log("✅ Updated:", matches.length, "matches");
 
     await browser.close();
   } catch (err) {
-    console.error("Scrape failed:", err.message);
+    console.error("❌ Scrape failed:", err.message);
   }
 }
 
-// run every 15s
-setInterval(scrapeMatches, 15000);
+// run every 10 minutes instead of 15s
+setInterval(scrapeMatches, 10 * 60 * 1000);
 scrapeMatches();
 
+// API route
 app.get("/matches", (req, res) => {
   res.json(cachedMatches);
+});
+
+// Health check
+app.get("/", (req, res) => {
+  res.send("✅ Profixio scraper is running. Go to /matches for data.");
 });
 
 app.listen(process.env.PORT || 3000, () => {
