@@ -22,24 +22,38 @@ async function scrapeMatches() {
       });
 
       const page = await context.newPage();
+
+      // Capture all API requests (may reveal JSON endpoint)
+      page.on("response", async (resp) => {
+        try {
+          const url = resp.url();
+          if (url.includes("profixio") && url.includes("json")) {
+            console.log("📡 Found JSON endpoint:", url);
+          }
+        } catch {}
+      });
+
       await page.goto(
         "https://www.profixio.com/app/tournaments?klubbid=26031",
         { waitUntil: "networkidle", timeout: 60000 }
       );
 
       await page.addInitScript(() => {
-        Object.defineProperty(navigator, "webdriver", {
-          get: () => false,
-        });
+        Object.defineProperty(navigator, "webdriver", { get: () => false });
       });
 
-      await page.waitForSelector("table td", { timeout: 60000 });
-
+      // dump HTML
       lastHTML = await page.content();
 
-      const matches = await page.$$eval("table tr", rows =>
+      // Try scraping table if it exists
+      const rows = await page.$$("table tr");
+      if (rows.length === 0) {
+        console.warn("⚠️ No <table> rows found! Profixio may load via XHR.");
+      }
+
+      const matches = await page.$$eval("table tr", (rows) =>
         rows
-          .map(row => {
+          .map((row) => {
             const cols = Array.from(row.querySelectorAll("td"));
             if (cols.length >= 4) {
               return {
@@ -63,12 +77,10 @@ async function scrapeMatches() {
       console.error("❌ Scrape failed:", err.message);
     }
 
-    // wait a bit before retrying (e.g., 5s)
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise((r) => setTimeout(r, 10000)); // 10s between tries
   }
 }
 
-// start loop
 scrapeMatches();
 
 app.get("/matches", (req, res) => {
@@ -79,6 +91,7 @@ app.get("/matches", (req, res) => {
   });
 });
 
+// debug endpoint: see raw HTML
 app.get("/debug-html", (req, res) => {
   res.send(lastHTML || "⚠️ No HTML cached yet.");
 });
