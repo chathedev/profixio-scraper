@@ -4,15 +4,22 @@ const { chromium } = require("playwright");
 const app = express();
 let cachedMatches = [];
 let lastUpdated = null;
-let lastHTML = ""; // store HTML for debugging
+let lastHTML = "";
 
 async function scrapeMatches() {
   try {
     const browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"], // required on Railway
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
-    const page = await browser.newPage();
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      locale: "sv-SE",
+    });
+
+    const page = await context.newPage();
 
     console.log("🌍 Navigating to Profixio...");
     await page.goto(
@@ -20,10 +27,15 @@ async function scrapeMatches() {
       { waitUntil: "networkidle", timeout: 60000 }
     );
 
-    // wait for table cells (more robust than tbody rows)
+    // Spoof navigator.webdriver to look human
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", {
+        get: () => false,
+      });
+    });
+
     await page.waitForSelector("table td", { timeout: 60000 });
 
-    // grab raw HTML for debugging
     lastHTML = await page.content();
 
     const matches = await page.$$eval("table tr", rows =>
@@ -53,11 +65,10 @@ async function scrapeMatches() {
   }
 }
 
-// run every 5 min
-setInterval(scrapeMatches, 5 * 60 * 1000);
+// run every 10s
+setInterval(scrapeMatches, 10 * 1000);
 scrapeMatches();
 
-// endpoint: matches
 app.get("/matches", (req, res) => {
   res.json({
     updatedAt: lastUpdated,
@@ -66,7 +77,6 @@ app.get("/matches", (req, res) => {
   });
 });
 
-// endpoint: debug raw HTML
 app.get("/debug-html", (req, res) => {
   res.send(lastHTML || "⚠️ No HTML cached yet.");
 });
