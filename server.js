@@ -4,25 +4,29 @@ const { chromium } = require("playwright");
 const app = express();
 let cachedMatches = [];
 let lastUpdated = null;
+let lastHTML = ""; // store HTML for debugging
 
 async function scrapeMatches() {
   try {
     const browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"], // Railway fix
+      args: ["--no-sandbox", "--disable-setuid-sandbox"], // required on Railway
     });
     const page = await browser.newPage();
 
     console.log("🌍 Navigating to Profixio...");
-    await page.goto("https://www.profixio.com/app/tournaments?klubbid=26031", {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
+    await page.goto(
+      "https://www.profixio.com/app/tournaments?klubbid=26031",
+      { waitUntil: "networkidle", timeout: 60000 }
+    );
 
-    // wait for rows inside table
-    await page.waitForSelector("table tbody tr", { timeout: 60000 });
+    // wait for table cells (more robust than tbody rows)
+    await page.waitForSelector("table td", { timeout: 60000 });
 
-    const matches = await page.$$eval("table tbody tr", rows =>
+    // grab raw HTML for debugging
+    lastHTML = await page.content();
+
+    const matches = await page.$$eval("table tr", rows =>
       rows
         .map(row => {
           const cols = Array.from(row.querySelectorAll("td"));
@@ -39,42 +43,32 @@ async function scrapeMatches() {
         .filter(Boolean)
     );
 
-    // sort by date+time
-    const sorted = matches.sort((a, b) => {
-      const da = new Date(`${a.date} ${a.time}`);
-      const db = new Date(`${b.date} ${b.time}`);
-      return da - db;
-    });
-
-    cachedMatches = sorted;
+    cachedMatches = matches;
     lastUpdated = new Date().toISOString();
 
-    console.log(`✅ Scrape updated: ${sorted.length} matches`);
+    console.log(`✅ Scrape updated: ${matches.length} matches`);
     await browser.close();
   } catch (err) {
     console.error("❌ Scrape failed:", err.message);
   }
 }
 
-// Run every 5 minutes
+// run every 5 min
 setInterval(scrapeMatches, 5 * 60 * 1000);
 scrapeMatches();
 
-// Routes
+// endpoint: matches
 app.get("/matches", (req, res) => {
   res.json({
-    lastUpdated,
+    updatedAt: lastUpdated,
     count: cachedMatches.length,
     matches: cachedMatches,
   });
 });
 
-app.get("/status", (req, res) => {
-  res.json({
-    lastUpdated,
-    matchesCached: cachedMatches.length,
-    healthy: cachedMatches.length > 0,
-  });
+// endpoint: debug raw HTML
+app.get("/debug-html", (req, res) => {
+  res.send(lastHTML || "⚠️ No HTML cached yet.");
 });
 
 app.listen(process.env.PORT || 3000, () => {
